@@ -28,8 +28,18 @@ summary_prompt = PromptTemplate(
 )
 
 calendar_prompt = PromptTemplate(
-    input_variables=["transcript"],
-    template="Extract any date/time for follow-up meetings or scheduled events:\n{transcript}"
+    input_variables=["transcript", "today_date"],
+    template="""
+    Extract any follow-up meeting dates and times from this transcript. If a date or time is mentioned indirectly (e.g., "next week"), infer the exact date and time based on today's date ({today_date}). Format the output as:
+
+    Title: <title of the meeting>
+    Date: <YYYY-MM-DD>
+    Time: <HH:MM>
+    Description: <brief reason for the event>
+
+    Transcript:
+    {transcript}
+    """
 )
 
 summary_chain = LLMChain(llm=llm, prompt=summary_prompt)
@@ -67,6 +77,7 @@ class SummarizationTool(BaseTool):
     args_schema: Type[BaseModel] = TextInput
 
     def _run(self, text: str):
+        print("Summarization Tool Input:", text)  # Debugging
         return summary_chain.invoke({"transcript": text})['text']
     
     def _arun(self, text: str):
@@ -100,6 +111,7 @@ class GoogleCalendarTool(BaseTool):
     args_schema: Type[BaseModel] = TextInput
 
     def _run(self, text: str):
+        print("Google Calendar Tool Input:", text)  # Debugging
         match = re.search(r"Title: (.*?)\nDate: (.*?)\nTime: (.*?)\nDescription: (.*?)$", text, re.DOTALL)
         if not match:
             return "No event info found."
@@ -141,7 +153,53 @@ agent = initialize_agent(
 )
 
 # ------------- MAIN PROCESS ------------- #
+def preprocess_transcript(transcript):
+    # Extract lines with  tems or date/time references
+    relevant_lines = []
+    for line in transcript.splitlines():
+        if "next week" in line.lower() or "by" in line.lower() or "date" in line.lower():
+            relevant_lines.append(line)
+    return "\n".join(relevant_lines)
+
+def split_transcript(transcript, max_length=1000):
+    lines = transcript.splitlines()
+    chunks = []
+    current_chunk = []
+    current_length = 0
+    for line in lines:
+        line_length = len(line)
+        if current_length + line_length > max_length:
+            chunks.append("\n".join(current_chunk))
+            current_chunk = []
+            current_length = 0
+        current_chunk.append(line)
+        current_length += line_length
+    if current_chunk:
+        chunks.append("\n".join(current_chunk))
+    return chunks
+
+def analyze_transcript(transcript):
+    summary = summary_chain.invoke({"transcript": transcript})['text']
+    calendar_info = calendar_chain.invoke({"transcript": transcript, "today_date": datetime.date.today().isoformat()})['text']
+    return summary, calendar_info
+
 def process_meeting(transcript):
+    # Preprocess and split the transcript
+    preprocessed_transcript = preprocess_transcript(transcript)
+    chunks = split_transcript(preprocessed_transcript)
+
+    # Process each chunk
+    for chunk in chunks:
+        print("Processing Chunk:")
+        print(chunk)
+        summary_text, calendar_text = analyze_transcript(chunk)
+        print("Chunk Summary:", summary_text)
+        print("Chunk Calendar Info:", calendar_text)
+
+    # Pass the full transcript to the agent
+    print("Agent Input for Summarization:")
+    print(transcript)
+
     summary = agent.run(f"Summarize this meeting transcript:\n{transcript}")
     calendar_info = agent.run(
         f"""Check this meeting transcript and extract any date and time for follow-up meetings or scheduled events.
@@ -155,10 +213,19 @@ def process_meeting(transcript):
             Transcript:
             {transcript}
 
-            If someone says 'let's follow up next week' and no date is given, default to the week after today at 10am.:\n{transcript}""")
+            If someone says 'let's follow up next week' and no date is given, default to the week after today at 10am."""
+    )
+
+    print("Raw Agent Output for Calendar Info:")
+    print(calendar_info)
+
+    # Validate and process the calendar info
+    match = re.search(r"Title: (.*?)\nDate: (.*?)\nTime: (.*?)\nDescription: (.*?)$", calendar_info, re.DOTALL)
+    if not match:
+        raise ValueError("Invalid format in calendar info.")
     event_link = agent.run(f"Create a Google Calendar event from the following info:\n{calendar_info}")
     drive_upload = agent.run(f"Upload the meeting summary to Google Drive:\n{summary}")
-    
+
     print(summary)
     print(event_link)
     print(drive_upload)
