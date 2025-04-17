@@ -108,9 +108,12 @@ def create_calendar_event_from_summary() -> str:
         print("Payload for Calendar Event:", payload)  # Debugging
 
         # Create the calendar event
+        credentials = get_google_credentials(
+            token_file="token.json",
+            client_secrets_file=client_secret_path,
+        )
         calendar_tool = CalendarCreateEvent(
             scopes=['https://www.googleapis.com/auth/calendar'],
-            credentials_path=client_secret_path  # Use the client_secret_path
         )
         result = calendar_tool.run(payload)
         print("API Response:", result)  # Debugging
